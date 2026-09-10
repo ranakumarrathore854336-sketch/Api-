@@ -152,17 +152,27 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ key_text: keyText, daily_limit: dailyLimit, expiry_date: expiryDate })
       });
-      const data = await res.json();
+      
+      let data: any = null;
+      try {
+        data = await res.json();
+      } catch {
+        // Non-JSON response (e.g. 500 or 404 proxy page)
+      }
+
       if (!res.ok) {
-        showAlert(data.error || 'Failed to create key', 'error');
+        const errorMsg = data?.error || `Server returned error (${res.status})`;
+        showAlert(errorMsg, 'error');
         return false;
       }
+
       showAlert('API Key created successfully!');
       fetchKeys();
       fetchStats();
       return true;
-    } catch {
-      showAlert('Server error creating key', 'error');
+    } catch (err: unknown) {
+      console.error('Network or client error creating key:', err);
+      showAlert('Network error communicating with server', 'error');
       return false;
     }
   };

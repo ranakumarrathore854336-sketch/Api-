@@ -21,6 +21,27 @@ app.use((req, res, next) => {
   next();
 });
 
+// Normalize Vercel / serverless routing and rewrite parameters
+app.use((req, res, next) => {
+  if (req.query && typeof req.query.match === 'string') {
+    const matched = req.query.match;
+    delete req.query.match;
+    req.url = matched.startsWith('/') ? matched : '/api/' + matched;
+  } else if (req.headers && req.headers['x-matched-path']) {
+    const matched = req.headers['x-matched-path'] as string;
+    if (matched.startsWith('/api') || matched.endsWith('.php')) {
+      const qIdx = req.url.indexOf('?');
+      req.url = matched + (qIdx !== -1 ? req.url.substring(qIdx) : '');
+    }
+  }
+
+  // Handle stripped /api prefixes on Vercel
+  if (req.url.startsWith('/admin') || req.url.startsWith('/number.php') || req.url.startsWith('/number?') || req.url === '/number') {
+    req.url = '/api' + req.url;
+  }
+  next();
+});
+
 // Admin credentials
 const ADMIN_USER = process.env.ADMIN_USER || 'Abhi';
 const ADMIN_PASS = process.env.ADMIN_PASS || 'Abhi123';
@@ -187,12 +208,21 @@ app.get('/api/admin/keys', (req: Request, res: Response) => {
 
 // Create Key
 app.post('/api/admin/keys', (req: Request, res: Response) => {
-  const { key_text, daily_limit, expiry_date } = req.body;
-  const result = db.createKey(key_text || '', Number(daily_limit) || 0, expiry_date || '');
-  if (!result.success) {
-    return res.status(400).json({ error: result.error });
+  try {
+    const { key_text, daily_limit, expiry_date } = req.body || {};
+    if (!key_text || !String(key_text).trim()) {
+      return res.status(400).json({ error: 'API Key Text is required' });
+    }
+    const result = db.createKey(String(key_text).trim(), Number(daily_limit) || 0, expiry_date ? String(expiry_date).trim() : '');
+    if (!result.success) {
+      return res.status(400).json({ error: result.error || 'Failed to create key' });
+    }
+    return res.status(201).json({ success: true, key: result.key, message: 'API Key created successfully!' });
+  } catch (err: unknown) {
+    console.error('Error creating key:', err);
+    const msg = err instanceof Error ? err.message : 'Server error creating key';
+    return res.status(500).json({ error: msg });
   }
-  res.status(201).json({ success: true, key: result.key, message: 'API Key created successfully!' });
 });
 
 // Edit Key

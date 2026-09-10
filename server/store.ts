@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 
 export interface ApiKey {
   id: number;
@@ -34,8 +35,13 @@ interface DatabaseSchema {
   };
 }
 
-const DATA_DIR = path.resolve(process.cwd(), 'data');
+// Serverless / Vercel detection: local filesystem is read-only except /tmp
+const IS_SERVERLESS = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+const DATA_DIR = IS_SERVERLESS
+  ? path.resolve(os.tmpdir(), 'telecom_data')
+  : path.resolve(process.cwd(), 'data');
 const DB_FILE = path.resolve(DATA_DIR, 'api_store.json');
+const SEED_FILE = path.resolve(process.cwd(), 'data', 'api_store.json');
 
 function getTodayString(): string {
   return new Date().toISOString().split('T')[0];
@@ -124,24 +130,30 @@ class Store {
 
   private load() {
     try {
-      if (!fs.existsSync(DATA_DIR)) {
-        fs.mkdirSync(DATA_DIR, { recursive: true });
-      }
-      if (fs.existsSync(DB_FILE)) {
-        const raw = fs.readFileSync(DB_FILE, 'utf-8');
-        this.data = JSON.parse(raw);
-        if (!this.data.admin) {
-          this.data.admin = {
-            username: process.env.ADMIN_USER || 'Abhi',
-            password: process.env.ADMIN_PASS || 'Abhi123'
-          };
-          this.save();
+      // In serverless / Vercel: DB_FILE is in /tmp. If not present yet, copy from bundled seed
+      if (!fs.existsSync(DB_FILE)) {
+        if (fs.existsSync(SEED_FILE)) {
+          try {
+            const rawSeed = fs.readFileSync(SEED_FILE, 'utf-8');
+            this.data = JSON.parse(rawSeed);
+          } catch (seedErr) {
+            console.warn('Could not read seed file, using defaults:', seedErr);
+          }
         }
       } else {
-        this.save();
+        const raw = fs.readFileSync(DB_FILE, 'utf-8');
+        this.data = JSON.parse(raw);
       }
+
+      if (!this.data.admin) {
+        this.data.admin = {
+          username: process.env.ADMIN_USER || 'Abhi',
+          password: process.env.ADMIN_PASS || 'Abhi123'
+        };
+      }
+      this.save();
     } catch (err) {
-      console.error('Error loading database store:', err);
+      console.warn('Notice: Using in-memory database store:', err);
     }
   }
 
@@ -152,7 +164,8 @@ class Store {
       }
       fs.writeFileSync(DB_FILE, JSON.stringify(this.data, null, 2), 'utf-8');
     } catch (err) {
-      console.error('Error saving database store:', err);
+      // Gracefully handle read-only systems without breaking in-memory state
+      console.warn('Notice: Saved to in-memory state (disk sync skipped):', err);
     }
   }
 
@@ -183,32 +196,37 @@ class Store {
   }
 
   public createKey(keyText: string, dailyLimit: number, expiryDate: string): { success: boolean; error?: string; key?: ApiKey } {
-    this.checkDailyAutoReset();
-    const cleanText = keyText.trim();
-    if (!cleanText) {
-      return { success: false, error: 'API key text is required' };
-    }
-    if (this.data.keys.some(k => k.key_text.toLowerCase() === cleanText.toLowerCase())) {
-      return { success: false, error: 'API key already exists' };
-    }
+    try {
+      this.checkDailyAutoReset();
+      const cleanText = keyText.trim();
+      if (!cleanText) {
+        return { success: false, error: 'API key text is required' };
+      }
+      if (this.data.keys.some(k => k.key_text.toLowerCase() === cleanText.toLowerCase())) {
+        return { success: false, error: 'API key already exists' };
+      }
 
-    const nextId = this.data.keys.length > 0 ? Math.max(...this.data.keys.map(k => k.id)) + 1 : 1;
-    const newKey: ApiKey = {
-      id: nextId,
-      key_text: cleanText,
-      service_type: 'number',
-      daily_limit: Math.max(0, dailyLimit),
-      used_today: 0,
-      total_used: 0,
-      last_used: '',
-      expiry_date: expiryDate.trim(),
-      created_at: new Date().toISOString(),
-      active: 1
-    };
+      const nextId = this.data.keys.length > 0 ? Math.max(...this.data.keys.map(k => k.id)) + 1 : 1;
+      const newKey: ApiKey = {
+        id: nextId,
+        key_text: cleanText,
+        service_type: 'number',
+        daily_limit: Math.max(0, dailyLimit),
+        used_today: 0,
+        total_used: 0,
+        last_used: '',
+        expiry_date: expiryDate.trim(),
+        created_at: new Date().toISOString(),
+        active: 1
+      };
 
-    this.data.keys.push(newKey);
-    this.save();
-    return { success: true, key: newKey };
+      this.data.keys.push(newKey);
+      this.save();
+      return { success: true, key: newKey };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Error creating key';
+      return { success: false, error: msg };
+    }
   }
 
   public updateKey(id: number, dailyLimit: number, expiryDate: string): boolean {

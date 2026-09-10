@@ -4,12 +4,12 @@
   "outputDirectory": "dist",
   "rewrites": [
     {
-      "source": "/api/(.*)",
-      "destination": "/api/index"
+      "source": "/api.php",
+      "destination": "/api/index?match=api.php"
     },
     {
-      "source": "/api.php",
-      "destination": "/api/index"
+      "source": "/api/(.*)",
+      "destination": "/api/index?match=$1"
     },
     {
       "source": "/((?!api/).*)",
